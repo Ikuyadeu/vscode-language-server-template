@@ -1,13 +1,16 @@
 "use strict";
 
 import {
+    CodeAction,
     CodeActionKind,
     createConnection,
     Diagnostic,
     DiagnosticSeverity,
     Range,
+    TextDocumentEdit,
     TextDocuments,
     TextDocumentSyncKind,
+    TextEdit,
 } from "vscode-languageserver";
 import { TextDocument } from "vscode-languageserver-textdocument";
 
@@ -45,14 +48,30 @@ connection.onInitialize(() => {
 });
 
 /**
- * Analyzes the text document for problems.
- * @param doc text document to analyze
+ * 大文字に対して警告を表示する
  */
 function validate(doc: TextDocument) {
+    // The validator creates diagnostics for all uppercase words length 2 and more
+    const text = doc.getText();
+    const pattern = /\b[A-Z]{2,}\b/g;
+    let m: RegExpExecArray | null;
+
     const diagnostics: Diagnostic[] = [];
-    const range: Range = {start: {line: 0, character: 0},
-                          end: {line: 0, character: Number.MAX_VALUE}};
-    diagnostics.push(Diagnostic.create(range, "Hello world", DiagnosticSeverity.Warning, "", "sample"));
+    while ((m = pattern.exec(text)) !== null) {
+        const range: Range = {start: doc.positionAt(m.index),
+                              end: doc.positionAt(m.index + m[0].length),
+        };
+        const diagnostic: Diagnostic = Diagnostic.create(
+            range,
+            `${m[0]} is all uppercase.`,
+            DiagnosticSeverity.Warning,
+            "",
+            "sample",
+        );
+        diagnostics.push(diagnostic);
+    }
+
+    // Send the computed diagnostics to VSCode.
     connection.sendDiagnostics({ uri: doc.uri, diagnostics });
 }
 
@@ -69,6 +88,31 @@ function setupDocumentsListeners() {
 
     documents.onDidClose((close) => {
         connection.sendDiagnostics({ uri: close.document.uri, diagnostics: []});
+    });
+
+    connection.onCodeAction((params) => {
+        const diagnostics = params.context.diagnostics.filter((diag) => diag.source === "sample");
+        const textDocument = documents.get(params.textDocument.uri);
+        if (textDocument === undefined || diagnostics.length === 0) {
+            return [];
+        }
+        const codeActions: CodeAction[] = [];
+        diagnostics.forEach((diag) => {
+            const title = "Fix to lower case";
+            const originalText = textDocument.getText(diag.range);
+            const edits = [TextEdit.replace(diag.range, originalText.toLowerCase())];
+            const editPattern = { documentChanges: [
+                TextDocumentEdit.create({uri: textDocument.uri,
+                                         version: textDocument.version},
+                                        edits)] };
+            const fixAction = CodeAction.create(title,
+                                                editPattern,
+                                                CodeActionKind.QuickFix);
+            fixAction.diagnostics = [diag];
+            codeActions.push(fixAction);
+        });
+
+        return codeActions;
     });
 
 }
